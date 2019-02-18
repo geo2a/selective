@@ -3,6 +3,7 @@
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE KindSignatures #-}
+{-# LANGUAGE ConstraintKinds #-}
 {-# LANGUAGE DeriveFunctor #-}
 {-# LANGUAGE StandaloneDeriving #-}
 
@@ -17,6 +18,9 @@ import Data.Functor.Const
 import Data.Either (partitionEithers)
 import qualified Data.Map.Strict as Map
 
+-- | Hijack mtl's MonadState constraint to include Selective
+type MonadState s m = (Selective m, S.MonadState s m)
+
 data RW k v a = R k                 (v -> a)
               | W k (Program k v v) (v -> a)
     deriving Functor
@@ -28,15 +32,12 @@ instance Show k => Show (RW k v a) where
     show (W k _ _) = "W " ++ show k
 
 -- | Interpret the mutable dictionary effect in 'MonadState'
-toState :: (Ord k, S.MonadState (Map.Map k v) m) => RW k v a -> m a
+toState :: (Ord k, MonadState (Map.Map k v) m) => RW k v a -> m a
 toState (R k t) =
-    let s = S.get
-    in t <$> ((Map.!) <$> s <*> pure k)
+    t <$> ((Map.!) <$> S.get <*> pure k)
 toState (W k p t) = do
-    s <- S.get
-    let (v, s') = S.runState (runSelect toState p) s
-    S.put (Map.insert k v s')
-    pure (t v)
+    v <- runSelect toState p
+    S.state (\s -> (t v, Map.insert k v s))
 
 -- | Interpret a 'Program' in the state monad
 runProgramState :: Ord k => Program k v a -> Map.Map k v -> (a, Map.Map k v)
@@ -44,6 +45,9 @@ runProgramState f s = S.runState (runSelect toState f) s
 
 read :: k -> Program k v v
 read k = liftSelect (R k id)
+
+-- write :: k -> Program k v v -> Program k v v
+-- write k p = liftSelect (W k p id)
 
 write :: k -> Program k v v -> Program k v v
 write k p = p *> liftSelect (W k p id)
@@ -82,11 +86,17 @@ add = let x = read "x"
           isZero = (==) <$> pure 0 <*> write "z" sum
       in write "sumIsZero" (ifS isZero (pure 1) (pure 0))
 
+add' :: Program String Int Int
+add' = let x = read "x"
+           y = read "y"
+           sum = write "z" ((+) <$> x <*> y)
+           isZero = (==) <$> pure 0 <*> sum
+       in write "sumIsZero" (ifS isZero (pure 1) (pure 0))
+
 -- | This is a fully inlined version of 'add'
 addNormalForm :: Program String Int Int
 addNormalForm =
     write "sumIsZero" (ifS ((==) <$> pure 0 <*> write "z" ((+) <$> read "x" <*> read "y")) (pure 1) (pure 0))
-
 
 runExample :: Program String Int Int -> (Int, Map.Map String Int)
 runExample prog = runProgramState prog

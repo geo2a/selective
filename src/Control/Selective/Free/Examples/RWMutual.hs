@@ -105,3 +105,18 @@ addMemory =
                  , ("ic", 0)
                  ]
 
+-----------------
+-- jumpZero -----
+-----------------
+
+jumpZero :: Int -> Program String Int ()
+jumpZero offset =
+    let ic = read "ic"
+        zeroSet = (/=) <$> pure 0 <*> read "zero"
+    in whenS zeroSet (void $ write "ic" (fmap (+ offset) ic))
+
+jumpZeroMemory :: Map.Map String Int
+jumpZeroMemory =
+    Map.fromList [ ("ic", 0)
+                 , ("zero", 0)
+                 ]

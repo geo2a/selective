@@ -19,6 +19,10 @@ data RW k v a = R k                 (v -> a)
               | W k (Program k v v) (v -> a)
     deriving Functor
 
+data RW k v a = R k                 (v -> a)
+              | W k (Program k v v) (v -> a)
+    deriving Functor
+
 instance Show k => Show (RW k v a) where
     show (R k _)   = "R " ++ show k
     show (W k _ _) = "W " ++ show k

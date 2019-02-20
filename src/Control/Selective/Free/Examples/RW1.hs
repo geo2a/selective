@@ -40,8 +40,7 @@ toState (Coyoneda (R k) t) =
     in t <$> ((Map.!) <$> s <*> pure k)
 toState (Coyoneda (W k) t) = do
     s <- S.get
-    let action = \v ->
-        S.evalState (S.put (Map.insert k v s) *> pure v) s
+    let action = \v -> S.evalState (S.put (Map.insert k v s) *> pure v) s
     pure (t action)
 
 -- | Interpret a 'Program' in the state monad
@@ -59,10 +58,10 @@ add = let x = read "x"
           y = read "y"
           sum = (+) <$> x <*> y
           isZero = (==) <$> sum <*> pure 0
-      in write "z" sum -- *>
-        --  ifS isZero (write "sumIsZero" (pure 1))
-        --             (write "sumIsZero" (pure 0))
-                    -- *> sum
+      in write "z" sum *>
+         ifS isZero (write "sumIsZero" (pure 1))
+                    (write "sumIsZero" (pure 0))
+        --             -- *> sum
 
 runExample :: Program String Int Int -> (Int, Map.Map String Int)
 runExample prog = runProgramState prog

@@ -44,14 +44,22 @@ runProgramState f s = S.runState (runSelect toState f) s
 read :: k -> Program k v v
 read k = liftSelect (R k id)
 
--- write :: k -> Program k v v -> Program k v v
--- write k p = liftSelect (W k p id)
-
 write :: k -> Program k v v -> Program k v v
 write k p = p *> liftSelect (W k p id)
 
+--------------------------------------------------------------------------------
+-------- Instructions ----------------------------------------------------------
+--------------------------------------------------------------------------------
+
+runProgram :: Program String Int a -> Map.Map String Int -> (a, Map.Map String Int)
+runProgram prog memory = runProgramState prog memory
+
+------------
+-- Add -----
+------------
+
 -- | Read the values of the variables "x" and "y" and write the sum into the variable "z".
---   If the sum is zero, write 1 into the variable "sumIsZero", otherwise put 0 there.
+--   If the sum is zero, write 1 into the variable "zero", otherwise put 0 there.
 --
 --   This implementation looks intuitive, but it is wrong, since the two write operations
 --   can be considered independent and the effects required for computing the sum, i.e.
@@ -62,42 +70,38 @@ write k p = p *> liftSelect (W k p id)
 --     naively expected
 --
 --     > analyse addNaive
---     ([],Left (W "z" :| [R "y",R "x",W "sumIsZero",R "y",R "x"]))
+--     ([],Left (W "z" :| [R "y",R "x",W "zero",R "y",R "x"]))
 --
 --     Here, the two instances of 'sum' cause the duplication of 'R "x"' and R '"y"' effects.
 addNaive :: Program String Int Int
 addNaive = let sum = (+) <$> read "x" <*> read "y"
                isZero = (==) <$> sum <*> pure 0
-           in write "sumIsZero" (ifS isZero (pure 1) (pure 0))
+           in write "zero" (ifS isZero (pure 1) (pure 0))
               *> write "z" sum
 
 -- | This implementations of 'add' executes the effects associated with the 'sum' value only once and
 --   then wires the pure value into the computations which require it without triggering the effects again.
 --
 --   > analyse add
---   ([],Left (W "sumIsZero" :| [W "z",R "y",R "x"]))
+--   ([],Left (W "zero" :| [W "z",R "y",R "x"]))
 --
 add :: Program String Int Int
 add = let x = read "x"
           y = read "y"
           sum = (+) <$> x <*> y
           isZero = (==) <$> pure 0 <*> write "z" sum
-      in write "sumIsZero" (ifS isZero (pure 1) (pure 0))
-
-add' :: Program String Int Int
-add' = let x = read "x"
-           y = read "y"
-           sum = write "z" ((+) <$> x <*> y)
-           isZero = (==) <$> pure 0 <*> sum
-       in write "sumIsZero" (ifS isZero (pure 1) (pure 0))
+      in write "zero" (ifS isZero (pure 1) (pure 0))
 
 -- | This is a fully inlined version of 'add'
 addNormalForm :: Program String Int Int
 addNormalForm =
-    write "sumIsZero" (ifS ((==) <$> pure 0 <*> write "z" ((+) <$> read "x" <*> read "y")) (pure 1) (pure 0))
+    write "zero" (ifS ((==) <$> pure 0 <*> write "z" ((+) <$> read "x" <*> read "y")) (pure 1) (pure 0))
 
-runExample :: Program String Int Int -> (Int, Map.Map String Int)
-runExample prog = runProgramState prog
-    (Map.fromList [("x", 2), ("y", -2), ("sumIsZero", 0)])
+addMemory :: Map.Map String Int
+addMemory =
+    Map.fromList [ ("x", 2)
+                 , ("y", 2)
+                 , ("zero", 0)
+                 , ("ic", 0)
+                 ]
 
-analyseAdd = analyse add

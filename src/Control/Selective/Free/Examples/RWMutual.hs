@@ -10,12 +10,10 @@
 module Control.Selective.Free.Examples.RWMutual where
 
 import Prelude hiding (read)
+import Data.Functor (void)
 import qualified Control.Monad.State as S
-import Control.Applicative ((<**>))
 import Control.Selective
 import Control.Selective.Free
-import Data.Functor.Const
-import Data.Either (partitionEithers)
 import qualified Data.Map.Strict as Map
 
 -- | Hijack mtl's MonadState constraint to include Selective

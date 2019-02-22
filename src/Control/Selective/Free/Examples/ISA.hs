@@ -11,6 +11,7 @@ module Control.Selective.Free.Examples.ISA where
 
 import Prelude hiding (read)
 import Data.Word (Word8)
+import Data.Int (Int16)
 import Data.Functor (void)
 import qualified Control.Monad.State as S
 import Control.Selective
@@ -28,51 +29,106 @@ fromBool False = 0
 -------- Types -----------------------------------------------------------------
 --------------------------------------------------------------------------------
 
-type Location = String
+-- | The ISA operates signed 16-bit words
+type Value = Int16
 
-data Register = R1 | R2 | R3 | R4
+-- | The ISA has 4 registers
+data Reg = R1 | R2 | R3 | R4
+    deriving (Show, Eq, Ord)
 
+r0, r1, r2, r3 :: Key
+[r0, r1, r2, r3] = map Register [R1, R2, R3, R4]
+_ = undefined
+
+type RegisterBank = Map.Map Reg Value
+
+-- | The address space is indexed by one byte
 type Address = Word8
 
-type Value   = Word8
+-- | We model memory as a map from bytes to signed 16-bit words
+type Memory = Map.Map Address Value
 
-data State = State { registers :: Map.Map Register Value
-                   , memory    :: Map.Map Address Value
-                   }
+-- | The ISA has two flags
+data F = Zero     -- ^ tracks if the result of the last arithmetical operation was zero
+       | Overflow -- ^ tracks integer overflow
+    deriving (Show, Eq, Ord)
 
-data RW a = R Location             (Value -> a)
-          | W Location (ISA Value) (Value -> a)
+type Flags = Map.Map F Value
+
+-- | Address in the program memory
+type InstructionAddress = Value
+
+-- data Key v where
+--     Register :: Reg -> Key Value              -- ^ Refer to a register
+--     Memory   :: Address  -> Key Value         -- ^ Refer to a memory location
+--     Flag     :: F  -> Key Bool                -- ^ Refer to a flag
+--     PC       :: Key InstructionAddress -- ^ Refer to the program counter
+
+data Key =
+    Register Reg
+    | Memory Address
+    | Flag   F
+    | PC
+
+instance Show Key where
+    show (Register r ) = show r
+    show (Memory addr) = show addr
+    show (Flag   f)    = show f
+    show PC            = "PC"
+
+deriving instance Eq Key
+
+data ISAState = ISAState { registers :: RegisterBank
+                         , memory    :: Memory
+                         , pc        :: InstructionAddress
+                         , flags     :: Flags
+                         }
+
+data RW a = R Key             (Value -> a)
+          | W Key (ISA Value) (Value -> a)
     deriving Functor
 
 type ISA a = Select RW a
 
 instance Show (RW a) where
-    show (R k _)   = "R " ++ show k
-    show (W k _ _) = "W " ++ show k
+    show (R k _)   = "Read "  ++ show k
+    show (W k _ _) = "Write " ++ show k
 
--- | Interpret the mutable dictionary effect in 'MonadState'
-toState :: MonadState (Map.Map Location Value) m => RW a -> m a
-toState (R k t) =
-    t <$> ((Map.!) <$> S.get <*> pure k)
-toState (W k p t) = do
-    v <- runSelect toState p
-    S.state (\s -> (t v, Map.insert k v s))
+-- | Interpret the internal ISA effect in 'MonadState'
+toState :: MonadState ISAState m => RW a -> m a
+toState (R k t) = t <$> case k of
+    Register r  -> (Map.!) <$> (registers <$> S.get) <*> pure r
+    Memory addr -> (Map.!) <$> (memory    <$> S.get) <*> pure addr
+    Flag f      -> (Map.!) <$> (flags     <$> S.get) <*> pure f
+    PC          -> pc <$> S.get
+toState (W k p t) = case k of
+    Register r  -> do v <- runSelect toState p
+                      let regs' s = Map.insert r v (registers s)
+                      S.state (\s -> (t v, s {registers = regs' s}))
+    Memory addr -> do v <- runSelect toState p
+                      let mem' s = Map.insert addr v (memory s)
+                      S.state (\s -> (t v, s {memory = mem' s}))
+    Flag f      -> do v <- runSelect toState p
+                      let flags' s = Map.insert f v (flags s)
+                      S.state (\s -> (t v, s {flags = flags' s}))
+    PC          -> error "toState: Can't write the Program Counter (PC)"
+
 
 -- | Interpret a 'Program' in the state monad
-runProgramState :: ISA a -> Map.Map Location Value -> (a, Map.Map Location Value)
+runProgramState :: ISA a -> ISAState -> (a, ISAState)
 runProgramState f s = S.runState (runSelect toState f) s
 
-read :: Location -> ISA Value
+read :: Key -> ISA Value
 read k = liftSelect (R k id)
 
-write :: Location -> ISA Value -> ISA Value
+write :: Key -> ISA Value -> ISA Value
 write k p = p *> liftSelect (W k p id)
 
 -- --------------------------------------------------------------------------------
 -- -------- Instructions ----------------------------------------------------------
 -- --------------------------------------------------------------------------------
 
-runProgram :: ISA a -> Map.Map Location Value -> (a, Map.Map Location Value)
+runProgram :: ISA a -> ISAState -> (a, ISAState)
 runProgram prog memory = runProgramState prog memory
 
 ------------
@@ -94,11 +150,12 @@ runProgram prog memory = runProgramState prog memory
 --     ([],Left (W "z" :| [R "y",R "x",W "zero",R "y",R "x"]))
 --
 --     Here, the two instances of 'sum' cause the duplication of 'R "x"' and R '"y"' effects.
-addNaive :: ISA Value
-addNaive = let sum = (+) <$> read "x" <*> read "y"
-               isZero = (==) <$> sum <*> pure 0
-           in write "zero" (ifS isZero (pure 1) (pure 0))
-              *> write "z" sum
+addNaive :: Key -> Key -> Key -> ISA Value
+addNaive reg1 reg2 reg3 =
+    let sum = (+) <$> read reg1 <*> read reg2
+        isZero = (==) <$> sum <*> pure 0
+    in write (Flag Zero) (ifS isZero (pure 1) (pure 0))
+       *> write reg3 sum
 
 -- | This implementations of 'add' executes the effects associated with the 'sum' value only once and
 --   then wires the pure value into the computations which require it without triggering the effects again.
@@ -106,42 +163,42 @@ addNaive = let sum = (+) <$> read "x" <*> read "y"
 --   > analyse add
 --   ([],Left (W "zero" :| [W "z",R "y",R "x"]))
 --
-add :: Location -> Location -> Location -> ISA Value
-add var1 var2 var3 =
-    let x = read var1
-        y = read var2
+add :: Key -> Key -> Key -> ISA Value
+add reg1 reg2 reg3 =
+    let x = read reg1
+        y = read reg2
         sum = (+) <$> x <*> y
-        isZero = (==) <$> pure 0 <*> write var3 sum
-    in write "zero" (fromBool <$> isZero)
+        isZero = (==) <$> pure 0 <*> write reg3 sum
+    in write (Flag Zero) (fromBool <$> isZero)
 
--- | This is a fully inlined version of 'add'
-addNormalForm :: ISA Value
-addNormalForm =
-    write "zero" (ifS ((==) <$> pure 0 <*> write "z" ((+) <$> read "x" <*> read "y")) (pure 1) (pure 0))
+-- -- | This is a fully inlined version of 'add'
+-- addNormalForm :: ISA Value
+-- addNormalForm =
+--     write "zero" (ifS ((==) <$> pure 0 <*> write "z" ((+) <$> read "x" <*> read "y")) (pure 1) (pure 0))
 
-addMemory :: Map.Map Location Value
-addMemory =
-    Map.fromList [ ("x", 255)
-                 , ("y", 1)
-                 , ("zero", 0)
-                 , ("overflow", 0)
-                 , ("ic", 0)
-                 ]
+-- addState :: Memory
+-- addState =
+--     Map.fromList [ ("x", 255)
+--                  , ("y", 1)
+--                  , ("zero", 0)
+--                  , ("overflow", 0)
+--                  , ("ic", 0)
+--                  ]
 
 -----------------
 -- jumpZero -----
 -----------------
 jumpZero :: Value -> ISA ()
 jumpZero offset =
-    let ic = read "ic"
-        zeroSet = (/=) <$> pure 0 <*> read "zero"
-    in whenS zeroSet (void $ write "ic" (fmap (+ offset) ic))
+    let ic = read PC
+        zeroSet = (/=) <$> pure 0 <*> read (Flag Zero)
+    in whenS zeroSet (void $ write PC (fmap (+ offset) ic))
 
-jumpZeroMemory :: Map.Map Location Value
-jumpZeroMemory =
-    Map.fromList [ ("ic", 0)
-                 , ("zero", 0)
-                 ]
+-- jumpZeroMemory :: Map.Map Key Value
+-- jumpZeroMemory =
+--     Map.fromList [ ("ic", 0)
+--                  , ("zero", 0)
+--                  ]
 
 -----------------------------------
 -- Add with overflow tracking -----
@@ -166,15 +223,15 @@ jumpZeroMemory =
 --  ([],Left (W "overflow" :| [R "y",R "x",W "zero",W "z",R "y",R "x"]))
 --
 -- Thus, 'willOverflowPure' might be though as a atomic microcommand in some sense.
-addOverflow :: Location -> Location -> Location -> ISA Value
+addOverflow :: Key -> Key -> Key -> ISA Value
 addOverflow var1 var2 dest =
-    let arg1   = read var1
-        arg2   = read var2
-        result = (+) <$> arg1 <*> arg2
-        isZero = (==) <$> pure 0 <*> write dest result
+    let arg1     = read var1
+        arg2     = read var2
+        result   = (+)  <$> arg1   <*> arg2
+        isZero   = (==) <$> pure 0 <*> write dest result
         overflow = willOverflowPure <$> arg1 <*> arg2
-    in write "zero"     (fromBool <$> isZero) *>
-       write "overflow" (fromBool <$> overflow)
+    in write (Flag Zero)     (fromBool <$> isZero) *>
+       write (Flag Overflow) (fromBool <$> overflow)
 
 willOverflowPure :: Value -> Value -> Bool
 willOverflowPure arg1 arg2 =
@@ -195,16 +252,15 @@ willOverflowPure arg1 arg2 =
 --
 --  It is not clear at the moment what to do with that. Should we avoid this style? Or could it be
 --  sometimes useful?
-addOverflowNaive :: Location -> Location -> Location -> ISA ()
+addOverflowNaive :: Key -> Key -> Key -> ISA Value
 addOverflowNaive var1 var2 dest =
     let arg1   = read var1
         arg2   = read var2
         result = (+) <$> arg1 <*> arg2
         isZero = (==) <$> pure 0 <*> write dest result
         overflow = willOverflow arg1 arg2
-    in whenS isZero (void $ write "zero" (pure 1))
-       *>
-       whenS overflow (void $ write "overflow" (pure 1))
+    in write (Flag Zero)     (fromBool <$> isZero) *>
+       write (Flag Overflow) (fromBool <$> overflow)
 
 willOverflow :: ISA Value -> ISA Value -> ISA Bool
 willOverflow arg1 arg2 =

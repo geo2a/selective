@@ -90,9 +90,12 @@ data RW a = R Key             (Value -> a)
 
 type ISA a = Select RW a
 
-instance Show (RW a) where
+instance Show a => Show (RW a) where
     show (R k _)   = "Read "  ++ show k
-    show (W k _ _) = "Write " ++ show k
+    show (W k (Pure v) _) = "Write " ++ show k ++ " " ++ show v
+    show (W k _        _) = "Write " ++ show k
+    -- show (W k (Select f v)        _) = "Write " ++ show k ++ " unknown"
+    -- show (W k (Select (Pure (Left x)) f)        _) = "Write " ++ show k ++ " " -- ++ show x
 
 -- | Interpret the internal ISA effect in 'MonadState'
 toState :: MonadState ISAState m => RW a -> m a
@@ -190,9 +193,11 @@ add reg1 reg2 reg3 =
 -----------------
 jumpZero :: Value -> ISA ()
 jumpZero offset =
-    let ic = read PC
-        zeroSet = (/=) <$> pure 0 <*> read (Flag Zero)
-    in whenS zeroSet (void $ write PC (fmap (+ offset) ic))
+    let pc       = read PC
+        zeroSet  = (/=) <$> pure 0 <*> read (Flag Zero)
+        -- modifyPC = void $ write PC (pure offset) -- (fmap (+ offset) pc)
+        modifyPC = void $ write PC (fmap (+ offset) pc)
+    in whenS zeroSet modifyPC
 
 -- jumpZeroMemory :: Map.Map Key Value
 -- jumpZeroMemory =

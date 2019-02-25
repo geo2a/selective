@@ -25,36 +25,35 @@ import Control.Selective.Free.Examples.ISA.Types
 -------- Instructions ----------------------------------------------------------
 --------------------------------------------------------------------------------
 
-
 data Instruction where
-  Halt   :: Instruction
-  Load   :: Reg -> Address -> Instruction
-  Set    :: Reg -> Value -> Instruction
-  Store  :: Reg -> Address -> Instruction
-  Add    :: Reg -> Reg -> Address -> Instruction
-  Sub    :: Reg -> Reg -> Address -> Instruction
-  Mul    :: Reg -> Address -> Instruction
-  Div    :: Reg -> Address -> Instruction
-  Mod    :: Reg -> Address -> Instruction
-  Abs    :: Reg -> Instruction
-  Jump :: Value -> Instruction
+  Halt     :: Instruction
+  Load     :: Register -> Address -> Instruction
+  Set      :: Register -> Value -> Instruction
+  Store    :: Register -> Address -> Instruction
+  Add      :: Register -> Address -> Instruction
+  Sub      :: Register -> Address -> Instruction
+  Mul      :: Register -> Address -> Instruction
+  Div      :: Register -> Address -> Instruction
+  Mod      :: Register -> Address -> Instruction
+  Abs      :: Register -> Instruction
+  Jump     :: Value -> Instruction
   JumpZero :: Value -> Instruction
-  LoadMI :: Reg -> Address -> Instruction
+  LoadMI   :: Register -> Address -> Instruction
 
 deriving instance Show Instruction
 
 semantics :: Instruction -> ISA Value
 semantics i = case i of
     Halt            -> undefined -- halt
-    Load reg addr   -> load (Register reg) (Memory addr)
+    Load reg addr   -> load reg addr
     LoadMI reg addr -> undefined -- loadMI reg addr
-    Set reg val     -> set (Register reg) val
-    Store reg addr  -> store (Register reg) (Memory addr)
-    Add reg1 reg2 addr    -> addOverflow (Register reg1) (Register reg2) (Memory addr)
-    Sub reg1 reg2 addr    -> sub (Register reg1) (Register reg2) (Memory addr)
-    Mul reg addr    -> mul (Register reg) (Memory addr)
-    Div reg addr    -> div (Register reg) (Memory addr)
-    Mod reg addr    -> mod (Register reg) (Memory addr)
+    Set reg val     -> set reg val
+    Store reg addr  -> store reg addr
+    Add reg1 addr    -> addOverflow reg1 addr
+    Sub reg1 addr    -> sub reg1 addr
+    Mul reg addr    -> mul reg addr
+    Div reg addr    -> div reg addr
+    Mod reg addr    -> mod reg addr
     Abs reg         -> undefined -- abs (Register reg)
     Jump simm8      -> jump simm8
     JumpZero simm8  -> jumpZero simm8
@@ -63,22 +62,22 @@ semantics i = case i of
 -- Set -----
 ------------
 
-set :: Key -> Value -> ISA Value
-set reg = write reg . pure
+set :: Register -> Value -> ISA Value
+set reg = write (Reg reg) . pure
 
 -------------
 -- Load -----
 -------------
 
-load :: Key -> Key -> ISA Value
-load reg addr = write reg (read addr)
+load :: Register -> Address -> ISA Value
+load reg addr = write (Reg reg) (read (Mem addr))
 
 --------------
 -- Store -----
 --------------
 
-store :: Key -> Key -> ISA Value
-store reg addr = write addr (read reg)
+store :: Register -> Address -> ISA Value
+store reg addr = write (Mem addr) (read (Reg reg))
 
 ------------
 -- Add -----
@@ -95,16 +94,16 @@ store reg addr = write addr (read reg)
 --   * the static analysis of the computations reports more dependencies then one might have
 --     naively expected
 --
---     > analyse addNaive
---     ([],Left (W "z" :| [R "y",R "x",W "zero",R "y",R "x"]))
+--     > getEffects addNaive
+--     [Read R0,Read 0,Write Zero,Read R0,Read 0,Write R0]
 --
---     Here, the two instances of 'sum' cause the duplication of 'R "x"' and R '"y"' effects.
-addNaive :: Key -> Key -> Key -> ISA Value
-addNaive reg1 reg2 reg3 =
-    let sum = (+) <$> read reg1 <*> read reg2
-        isZero = (==) <$> sum <*> pure 0
-    in write (Flag Zero) (ifS isZero (pure 1) (pure 0))
-       *> write reg3 sum
+--     Here, the two instances of 'sum' cause the duplication of 'Read R0' and 'Read 0' effects.
+addNaive :: Register -> Address -> ISA Value
+addNaive reg addr =
+    let sum    = (+)  <$> read (Reg reg) <*> read (Mem addr)
+        isZero = (==) <$> sum            <*> pure 0
+    in write (F Zero) (ifS isZero (pure 1) (pure 0))
+       *> write (Reg reg) sum
 
 -- | This implementations of 'add' executes the effects associated with the 'sum' value only once and
 --   then wires the pure value into the computations which require it without triggering the effects again.
@@ -112,13 +111,13 @@ addNaive reg1 reg2 reg3 =
 --   > analyse add
 --   ([],Left (W "zero" :| [W "z",R "y",R "x"]))
 --
-add :: Key -> Key -> Key -> ISA Value
-add reg1 reg2 reg3 =
-    let x = read reg1
-        y = read reg2
+add :: Register -> Address -> ISA Value
+add reg addr =
+    let x = read (Reg reg)
+        y = read (Mem addr)
         sum = (+) <$> x <*> y
-        isZero = (==) <$> pure 0 <*> write reg3 sum
-    in write (Flag Zero) (fromBool <$> isZero)
+        isZero = (==) <$> pure 0 <*> write (Reg reg) sum
+    in write (F Zero) (fromBool <$> isZero)
 
 -- -- | This is a fully inlined version of 'add'
 -- addNormalForm :: ISA Value
@@ -140,7 +139,7 @@ add reg1 reg2 reg3 =
 jumpZero :: Value -> ISA Value
 jumpZero offset =
     let pc       = read PC
-        zeroSet  = (/=) <$> pure 0 <*> read (Flag Zero)
+        zeroSet  = (/=) <$> pure 0 <*> read (F Zero)
         -- modifyPC = void $ write PC (pure offset) -- (fmap (+ offset) pc)
         modifyPC = void $ write PC (fmap (+ offset) pc)
     in whenS zeroSet modifyPC *> pure offset
@@ -179,15 +178,15 @@ jump simm =
 --  ([],Left (W "overflow" :| [R "y",R "x",W "zero",W "z",R "y",R "x"]))
 --
 -- Thus, 'willOverflowPure' might be though as a atomic microcommand in some sense.
-addOverflow :: Key -> Key -> Key -> ISA Value
-addOverflow var1 var2 dest =
-    let arg1     = read var1
-        arg2     = read var2
+addOverflow :: Register -> Address  -> ISA Value
+addOverflow reg addr =
+    let arg1     = read (Reg reg)
+        arg2     = read (Mem addr)
         result   = (+)  <$> arg1   <*> arg2
-        isZero   = (==) <$> pure 0 <*> write dest result
+        isZero   = (==) <$> pure 0 <*> write (Reg reg) result
         overflow = willOverflowPure <$> arg1 <*> arg2
-    in write (Flag Zero)     (fromBool <$> isZero) *>
-       write (Flag Overflow) (fromBool <$> overflow)
+    in write (F Zero)     (fromBool <$> isZero) *>
+       write (F Overflow) (fromBool <$> overflow)
 
 willOverflowPure :: Value -> Value -> Bool
 willOverflowPure arg1 arg2 =
@@ -201,22 +200,33 @@ willOverflowPure arg1 arg2 =
 -- | Add two values and detect integer overflow
 --  In this implementations we take a different approach and, when implementing overflow detection,
 --  lift all the pure operations into Applicative. This forces the semantics to read the input
---  variables more times than 'addOverflow' does (var1 3x times and var2 5x times)
+--  variables more times than 'addOverflow' does (var1 3x times and addr 5x times)
 --
 --  > analyse (addOverflowNaive  "x" "y" "z")
 --  ([],Left (W "overflow" :| [R "y",R "x",R "y",R "y",R "x",R "y",W "zero",W "z",R "y",R "x"]))
 --
 --  It is not clear at the moment what to do with that. Should we avoid this style? Or could it be
 --  sometimes useful?
-addOverflowNaive :: Key -> Key -> Key -> ISA Value
-addOverflowNaive var1 var2 dest =
-    let arg1   = read var1
-        arg2   = read var2
+addOverflowNaive :: Register -> Address -> ISA Value
+addOverflowNaive reg addr =
+    let arg1   = read (Reg reg)
+        arg2   = read (Mem addr)
         result = (+) <$> arg1 <*> arg2
-        isZero = (==) <$> pure 0 <*> write dest result
+        isZero = (==) <$> pure 0 <*> write (Reg reg) result
         overflow = willOverflow arg1 arg2
-    in write (Flag Zero)     (fromBool <$> isZero) *>
-       write (Flag Overflow) (fromBool <$> overflow)
+    in write (F Zero)     (fromBool <$> isZero) *>
+       write (F Overflow) (fromBool <$> overflow)
+
+-- add0 :: ISA (Value, Value, Bool, Bool, Value)
+-- add0 = (\x y -> (x, y, True, True, 0)) <$> read (Reg R0) <*> read (Mem 1)
+
+-- add1 :: ISA (Value, Value, Bool, Bool, Value)
+-- add1 = (\(x, y, zero, overflow, sum) -> (x, y, x + y == 0, willOverflowPure x y, x + y)) <$> add0
+
+-- add2 :: ISA Value
+-- add2 = write (Reg R1) ((\(x, y, z, o, s) -> s) <$> add1) *>
+--        write (F Zero) ((\(x, y, z, o, s) -> fromBool z) <$> add1)
+
 
 willOverflow :: ISA Value -> ISA Value -> ISA Bool
 willOverflow arg1 arg2 =
@@ -231,33 +241,33 @@ willOverflow arg1 arg2 =
 
 -- | Subtraction
 --   NOTE: currently always sets the 'Overflow' flag to zero
-sub :: Key -> Key -> Key -> ISA Value
-sub var1 var2 dest =
-    let arg1     = read var1
-        arg2     = read var2
+sub :: Register -> Address -> ISA Value
+sub reg addr =
+    let arg1     = read (Reg reg)
+        arg2     = read (Mem addr)
         result   = (-)  <$> arg1   <*> arg2
-        isZero   = (==) <$> pure 0 <*> write dest result
-    in write (Flag Zero)     (fromBool <$> isZero) *>
-       write (Flag Overflow) (pure 0)
+        isZero   = (==) <$> pure 0 <*> write (Reg reg) result
+    in write (F Zero)     (fromBool <$> isZero) *>
+       write (F Overflow) (pure 0)
 
 -- | Multiply a value from memory location to one in a register.
 --   Applicative.
-mul :: Key -> Key -> ISA Value
+mul :: Register -> Address -> ISA Value
 mul reg addr =
-    let result = (*) <$> read reg <*> read addr
-    in  write (Flag Zero) (fromBool . (== 0) <$> write reg result)
+    let result = (*) <$> read (Reg reg) <*> read (Mem addr)
+    in  write (F Zero) (fromBool . (== 0) <$> write (Reg reg) result)
 
-div :: Key -> Key -> ISA Value
+div :: Register -> Address -> ISA Value
 div reg addr =
-    let result = Prelude.div <$> read reg <*> read addr
-    in  write (Flag Zero) (fromBool . (== 0) <$> write reg result)
+    let result = Prelude.div <$> read (Reg reg) <*> read (Mem addr)
+    in  write (F Zero) (fromBool . (== 0) <$> write (Reg reg) result)
 
-mod :: Key -> Key -> ISA Value
+mod :: Register -> Address -> ISA Value
 mod reg addr =
-    let result = Prelude.mod <$> read reg <*> read addr
-    in  write (Flag Zero) (fromBool . (== 0) <$> write reg result)
+    let result = Prelude.mod <$> read (Reg reg) <*> read (Mem addr)
+    in  write (F Zero) (fromBool . (== 0) <$> write (Reg reg) result)
 
---------------------------------------------------------------------------------
+-- --------------------------------------------------------------------------------
 
 partition :: [RW a] -> ([Key], [Key])
 partition = foldl go ([], [])
@@ -272,11 +282,11 @@ instructionGraph instrInfo@(_, instr) =
     in overlay (star (Right instrInfo) (map Left outs))
                (transpose $ star (Right instrInfo) (map Left ins))
 
--- -- | Compute static data flow graph of a program.
--- programGraph :: Program
---                  -> Graph (Either String (InstructionAddress, Instruction))
--- programGraph p = foldl go empty (map instructionGraph p)
---     where go acc g = overlay acc g
+-- | Compute static data flow graph of a program.
+programGraph :: [(InstructionAddress, Instruction)]
+                 -> Graph (Either Key (InstructionAddress, Instruction))
+programGraph p = foldl go empty (map instructionGraph p)
+    where go acc g = overlay acc g
 --------------------------------------------------------------------------------
 
 -- | Serialise data flow graph as a .dot string

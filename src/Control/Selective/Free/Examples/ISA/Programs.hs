@@ -10,14 +10,15 @@
 module Control.Selective.Free.Examples.ISA.Programs where
 
 import Prelude hiding (mod, read)
-import Data.Functor (void)
+import Data.List.NonEmpty (NonEmpty (..), fromList)
 import Control.Selective
 import Control.Selective.Free
 import Control.Selective.Free.Examples.ISA.Types
 import Control.Selective.Free.Examples.ISA.Instruction
+import Control.Selective.Free.Examples.ISA.Simulate
 
-gcdProgram :: [(InstructionAddress, Instruction)]
-gcdProgram = zip [0..]
+gcdProgram :: Program
+gcdProgram = fromList $ zip [0..]
     -- # Find the greatest common divisor of values in memory locations 0 and 1,
     -- # put result to the register R1
     [ (Set R0 0)
@@ -33,5 +34,8 @@ gcdProgram = zip [0..]
     , (Store R0 1)
     , (Store R1 0)
     , (Jump (-8))
-    -- , Halt
+    , Halt
     ]
+
+gcdState :: Value -> Value -> ISAState
+gcdState x y = boot gcdProgram (initialiseMemory [(0, x), (1, y)])

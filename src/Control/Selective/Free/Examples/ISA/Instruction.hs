@@ -12,7 +12,10 @@ module Control.Selective.Free.Examples.ISA.Instruction where
 
 import Prelude hiding (div, mod, read)
 import qualified Prelude (div, mod)
+import qualified Data.List.NonEmpty as NonEmpty
+import Data.List.NonEmpty (NonEmpty (..), fromList)
 import Data.Functor (void)
+-- import qualified Data.Map as Map
 import qualified Data.Set as Set
 import Data.Maybe (fromJust)
 import Control.Selective
@@ -42,21 +45,35 @@ data Instruction where
 
 deriving instance Show Instruction
 
+type Program = NonEmpty (InstructionAddress, Instruction)
+
 semantics :: Instruction -> ISA Value
 semantics i = case i of
-    Halt            -> undefined -- halt
+    Halt            -> halt
     Load reg addr   -> load reg addr
     LoadMI reg addr -> undefined -- loadMI reg addr
     Set reg val     -> set reg val
     Store reg addr  -> store reg addr
-    Add reg1 addr    -> addOverflow reg1 addr
-    Sub reg1 addr    -> sub reg1 addr
+    Add reg1 addr   -> addOverflow reg1 addr
+    Sub reg1 addr   -> sub reg1 addr
     Mul reg addr    -> mul reg addr
     Div reg addr    -> div reg addr
     Mod reg addr    -> mod reg addr
     Abs reg         -> undefined -- abs (Register reg)
     Jump simm8      -> jump simm8
     JumpZero simm8  -> jumpZero simm8
+
+blockSemantics :: NonEmpty Instruction -> ISA Value
+blockSemantics is =
+    let meanings = fmap semantics is
+    in foldl (*>) (NonEmpty.head meanings) (NonEmpty.tail meanings)
+
+-------------
+-- Halt -----
+-------------
+
+halt :: ISA Value
+halt = write (F Halted) (pure 1)
 
 ------------
 -- Set -----
@@ -271,8 +288,8 @@ mod reg addr =
 
 partition :: [RW a] -> ([Key], [Key])
 partition = foldl go ([], [])
-    where go (accR, accW) = \case (R k _)   -> (k : accR, accW)
-                                  (W k _ _) -> (accR, k : accW)
+    where go (accR, accW) = \case (Read  k _)   -> (k : accR, accW)
+                                  (Write k _ _) -> (accR, k : accW)
 
 -- | Compute static data flow graph of an instruction.
 instructionGraph :: (InstructionAddress, Instruction)
